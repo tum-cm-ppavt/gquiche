@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "quiche/quic/core/quic_clock.h"
+//#include "quiche/common/quiche_text_utils.h"
 
 namespace quic {
 
@@ -49,7 +50,7 @@ void QuicClientSessionCache::Insert(const QuicServerId& server_id,
                                     const TransportParameters& params,
                                     const ApplicationState* application_state) {
   QUICHE_DCHECK(session) << "TLS session is not inserted into client cache.";
-  fprintf(stderr, "insert: session cache entry for %s:%u\n", server_id.host().c_str(), server_id.port());
+  //fprintf(stderr, "insert: session cache entry for %s:%u\n", server_id.host().c_str(), server_id.port());
   auto iter = cache_.Lookup(server_id.cache_key());
   if (iter == cache_.end()) {
     CreateAndInsertEntry(server_id, std::move(session), params,
@@ -57,19 +58,26 @@ void QuicClientSessionCache::Insert(const QuicServerId& server_id,
     return;
   }
 
-  QUICHE_DCHECK(iter->second->params);
   // The states are both the same, so only need to insert sessions.
-  if (params == *iter->second->params &&
+  if (iter->second->params && params == *iter->second->params &&
       DoApplicationStatesMatch(application_state,
                                iter->second->application_state.get())) {
     iter->second->PushSession(std::move(session));
     return;
   }
+
+  // This version always creates a new entry, carrying over any existing token.
+  // Alternatively we could try filling in the nullptrs in the existing entry
+  // if we created an almost empty token entry.
+  // The token might be the empty string, but this does not matter.
+  // The token is independent of individual QUIC sessions/connections according to RFC 9000 §8.1.3.
+  std::string token = std::move(iter->second->token);
   // Erase the existing entry because this Insert call must come from a
   // different QUIC session.
   cache_.Erase(iter);
+  //fprintf(stderr, "re-caching token \"%s\";\n", absl::BytesToHexString(token).c_str());
   CreateAndInsertEntry(server_id, std::move(session), params,
-                       application_state);
+                      application_state, std::move(token));
 }
 
 std::unique_ptr<QuicResumptionState> QuicClientSessionCache::Lookup(
@@ -97,7 +105,7 @@ std::unique_ptr<QuicResumptionState> QuicClientSessionCache::Lookup(
     // Clear token after use.
     iter->second->token.clear();
   }
-
+  //fprintf(stderr, "using token \"%s\" for %s:%u\n", absl::BytesToHexString(state->token).c_str(), server_id.host().c_str(), server_id.port());
   return state;
 }
 
@@ -119,6 +127,8 @@ void QuicClientSessionCache::OnNewTokenReceived(const QuicServerId& server_id,
   }
   auto iter = cache_.Lookup(server_id.cache_key());
   if (iter == cache_.end()) {
+    //fprintf(stderr, "caching token \"%s\";\n", absl::BytesToHexString(token).c_str());
+    CreateAndInsertTokenOnlyEntry(server_id, token);
     return;
   }
   iter->second->token = std::string(token);
@@ -140,7 +150,8 @@ void QuicClientSessionCache::Clear() { cache_.Clear(); }
 void QuicClientSessionCache::CreateAndInsertEntry(
     const QuicServerId& server_id, bssl::UniquePtr<SSL_SESSION> session,
     const TransportParameters& params,
-    const ApplicationState* application_state) {
+    const ApplicationState* application_state,
+    const std::string token) {
   auto entry = std::make_unique<Entry>();
   entry->PushSession(std::move(session));
   entry->params = std::make_unique<TransportParameters>(params);
@@ -148,8 +159,17 @@ void QuicClientSessionCache::CreateAndInsertEntry(
     entry->application_state =
         std::make_unique<ApplicationState>(*application_state);
   }
+  entry->token = std::move(token);
   cache_.Insert(server_id.cache_key(), std::move(entry));
 }
+
+
+void QuicClientSessionCache::CreateAndInsertTokenOnlyEntry(
+  const QuicServerId& server_id, const absl::string_view token) {
+    auto entry = std::make_unique<Entry>();
+    entry->token = std::string(token);
+    cache_.Insert(server_id.cache_key(), std::move(entry));
+  }
 
 QuicClientSessionCache::Entry::Entry() = default;
 QuicClientSessionCache::Entry::Entry(Entry&&) = default;

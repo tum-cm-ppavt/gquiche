@@ -67,6 +67,7 @@ class QUICHE_EXPORT QuicClientSessionCache : public SessionCache {
     bssl::UniquePtr<SSL_SESSION> sessions[2];
     std::unique_ptr<TransportParameters> params;
     std::unique_ptr<ApplicationState> application_state;
+    // Just like for sessions (tickets), we should probably store multiple tokens per entry.
     std::string token;  // An opaque string received in NEW_TOKEN frame.
   };
 
@@ -74,7 +75,12 @@ class QUICHE_EXPORT QuicClientSessionCache : public SessionCache {
   void CreateAndInsertEntry(const QuicServerId& server_id,
                             bssl::UniquePtr<SSL_SESSION> session,
                             const TransportParameters& params,
-                            const ApplicationState* application_state);
+                            const ApplicationState* application_state,
+                            const std::string token = std::string());
+
+  void CreateAndInsertTokenOnlyEntry(
+                            const QuicServerId& server_id,
+                            const absl::string_view token);
 
   QuicLRUCache<std::string, Entry, absl::Hash<std::string>> cache_;
 };
